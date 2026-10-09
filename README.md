@@ -24,6 +24,13 @@ files; the AI tools are not done yet.
   own format (`.doc` stays Word 97) and the plugin's host route writes it, guarded by the version
   last read. A change on disk reloads a clean document and is a conflict prompt while edits are
   pending, so an AI write is never overwritten silently.
+- LibreOffice commands that act outside the document's file (open, new, close, save as,
+  export, print, mail, other windows) are disabled; Save writes the file. The AI context follows
+  LibreOffice's cursor and selection: the selected text, and the paragraph standing in for the
+  line number.
+- LibreOffice's interface is in English: the ZetaOffice CDN build ships only the en-US language
+  pack (editing and displaying CJK text works). A self-hosted build with more language packs can
+  be configured below.
 - Planned: the AI edits documents through tools that drive the open LibreOffice instance (UNO), so
   changes show live and can be undone.
 

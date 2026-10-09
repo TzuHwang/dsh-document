@@ -77,6 +77,20 @@ export type Request =
    * input LibreOffice already received, so keys typed just before count.
    */
   | { readonly type: 'isModified'; readonly id: number }
+  /** Where the cursor and selection are; the reply's value is a {@link SelectionReport}. */
+  | { readonly type: 'getSelection'; readonly id: number }
+
+/**
+ * Cursor and selection for the AI context, as the template's editor takes them
+ * (`SelectionInfo`). Writer documents have no lines: paragraphs (1-based) stand for them.
+ */
+export interface SelectionReport {
+  readonly cursorLine: number
+  readonly fromLine: number
+  readonly toLine: number
+  /** Selected text, already cut to a bound; empty for a bare cursor. */
+  readonly text: string
+}
 
 export type Reply =
   | { readonly type: 'reply'; readonly id: number; readonly ok: true; readonly value?: unknown }
@@ -94,6 +108,8 @@ export type EditorEvent =
   | { readonly type: 'blur' }
   /** The user asked LibreOffice to save (Ctrl+S, the Save button): it is saved to the file. */
   | { readonly type: 'saveRequested' }
+  /** The cursor or selection moved and came to rest. */
+  | { readonly type: 'selection'; readonly selection: SelectionReport }
 
 export type FromEditor = Reply | EditorEvent
 
@@ -113,8 +129,10 @@ export type ThreadRequest =
   /** Store a copy of the document at `url` with LibreOffice's `filter`, and mark it unmodified. */
   | { readonly cmd: 'export'; readonly id: number; readonly url: string; readonly filter: string }
   | { readonly cmd: 'isModified'; readonly id: number }
+  | { readonly cmd: 'getSelection'; readonly id: number }
 
 export type ThreadMessage =
   | { readonly id: number; readonly ok: true; readonly value?: unknown }
   | { readonly id: number; readonly ok: false; readonly error: string }
   | { readonly event: 'ready' | 'modified' | 'saveRequested' }
+  | { readonly event: 'selection'; readonly selection: SelectionReport }

@@ -11,7 +11,7 @@
  */
 import type { SelfManagedEngine, Translate } from '@dsh-editor/core'
 import { fileIO, watchFile, type WorkspaceFiles } from './file-io.ts'
-import { CHANNEL, EDITOR_ROUTE, isEnvelope, type Envelope, type FromEditor, type Request, type WithoutId } from './protocol.ts'
+import { CHANNEL, EDITOR_ROUTE, isEnvelope, type Envelope, type FromEditor, type Request, type SelectionReport, type WithoutId } from './protocol.ts'
 import { FileSync, type SyncStatus } from './sync.ts'
 
 /** Formats LibreOffice Writer opens and saves. */
@@ -175,11 +175,24 @@ export function createDocumentEngine(files: WorkspaceFiles, t: Translate): SelfM
         banner.hidden = banner.childElementCount === 0
         previous = status.kind
       }
+      /**
+       * Tell the AI where the user is. `passive`: the move was not the user's (the file
+       * reloaded), so the context refreshes without this view taking over the session.
+       */
+      const reportSelection = async (passive: boolean): Promise<void> => {
+        try {
+          const selection = await request({ type: 'getSelection' }) as SelectionReport | undefined
+          if (selection !== undefined && !destroyed) binding.onSelection(selection, passive)
+        } catch {
+          // No document (yet): nothing to report.
+        }
+      }
+
       const unsubscribe = sync.subscribe({
         status: renderStatus,
         external: (bytes) => {
           // The file changed on disk while the document was clean: show the new version.
-          openInEditor(bytes).catch((error: unknown) => {
+          openInEditor(bytes).then(() => reportSelection(true), (error: unknown) => {
             banner.replaceChildren(text(t('error.reload', { reason: reason(error) })))
             banner.hidden = false
           })
@@ -209,6 +222,8 @@ export function createDocumentEngine(files: WorkspaceFiles, t: Translate): SelfM
             'LibreOffice did not export the document in time',
           )))
           setState('ready')
+          // A freshly opened file is what the user is looking at: tell the AI right away.
+          void reportSelection(false)
         } catch (error) {
           fail(t('error.open', { reason: reason(error) }))
         }
@@ -227,6 +242,7 @@ export function createDocumentEngine(files: WorkspaceFiles, t: Translate): SelfM
           case 'ready': void open(); break
           case 'failed': fail(t('error.start', { reason: message.message })); break
           case 'modified': if (root.dataset.state === 'ready') sync.touch(); break
+          case 'selection': if (!destroyed) binding.onSelection(message.selection, false); break
           // Leaving the editor (e.g. to message the AI) and Ctrl+S save now.
           case 'blur':
           case 'saveRequested': void saveNow(); break

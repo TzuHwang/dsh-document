@@ -13,7 +13,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { chromium } from 'playwright-core'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -107,6 +107,9 @@ dsh(['plugin', '--profile', 'smoke', 'add',
   ...['core', 'text', 'layout-main', 'context'].map(dir => posix(join(template, 'packages', dir))),
   posix(root)])
 
+// The template's local stand-in for the model API: records what the AI is sent.
+const { startMockLlm, userTurns } = await import(pathToFileURL(join(template, 'smoke', 'mock-llm.mjs')).href)
+const llm = await startMockLlm(posix(workspace))
 let server
 let browser
 let page
@@ -114,7 +117,7 @@ let page
 async function boot() {
   const child = spawn(process.execPath, [dshBin, '--profile', 'smoke', '--patch', overlay, '--no-open', '--port', '0'], {
     cwd: temp,
-    env: { ...env, DEEPSEEK_API_KEY: 'smoke-not-a-real-key' },
+    env: { ...env, DEEPSEEK_BASE_URL: llm.url, DEEPSEEK_API_KEY: 'smoke-not-a-real-key' },
   })
   let log = ''
   const url = await new Promise((resolve, reject) => {
@@ -146,7 +149,8 @@ async function openPage(url) {
 async function openFromFiles(name) {
   const entry = page.locator('[data-rightbar-col]').getByText(name, { exact: true }).filter({ hasNot: page.locator('[role=tab]') })
   for (let attempt = 0; attempt < 5; attempt++) {
-    await page.locator('body').click({ position: { x: 640, y: 200 } })
+    // DSH's page, not an editor (LibreOffice's iframe would take the shortcut): the empty left sidebar.
+    await page.mouse.click(140, 600)
     await page.keyboard.press('Control+Alt+P')
     if (await eventually(async () => (await entry.count()) > 0, 2_000)) break
   }
@@ -207,6 +211,26 @@ try {
   check('the editor page is isolated (SharedArrayBuffer available)', await page.frame({ url: /dsh-document\/editor/ })?.evaluate(() => self.crossOriginIsolated) === true)
   await page.screenshot({ path: join(temp, 'docx.png') })
 
+  // ---- the AI context follows LibreOffice's cursor and selection (M3) ----
+  const docBox = await engine.locator('iframe').boundingBox()
+  await page.mouse.click(docBox.x + docBox.width * 0.4, docBox.y + docBox.height * 0.6)
+  // The third paragraph, "Second paragraph.", selected with the keyboard.
+  for (const key of ['Control+Home', 'ArrowDown', 'ArrowDown', 'Home', 'Shift+End']) await page.keyboard.press(key)
+  await page.getByTestId('dsh-editor-open-chat').click()
+  const chat = page.locator('[data-testid=dsh-chat]:visible')
+  const chatInput = chat.locator('[role=textbox][contenteditable=true]')
+  // As the user does: the chip shows the selection (paragraph 3) once LibreOffice reported it.
+  const chip = chat.getByTestId('dsh-editor-context-chip')
+  check('context: the chat shows the selection in the document as the editor context', await eventually(async () =>
+    (await chip.count()) > 0 && (await chip.innerText()).includes('sample.docx:3')), await chip.innerText().catch(() => ''))
+  await chatInput.click()
+  await page.keyboard.type('what did I select?')
+  await page.keyboard.press('Enter')
+  check('context: the AI is told the document, the paragraph and the selected text', await eventually(() =>
+    userTurns(llm.requests).some(parts => parts.includes('what did I select?')
+      && parts.some(part => part.includes('`sample.docx` open') && part.includes('line 3') && part.includes('Second paragraph.')))),
+  userTurns(llm.requests).find(parts => parts.includes('what did I select?')))
+
   // ---- saving (M2) ----
   await typeInDocument(' saved-on-blur')
   await clickOutside()
@@ -256,6 +280,7 @@ try {
   if (page !== undefined && failures.length > 0) await page.screenshot({ path: join(temp, 'failure.png') }).catch(() => {})
   await browser?.close().catch(() => {})
   if (server !== undefined) killTree(server.child)
+  await llm.close()
 }
 
 if (failures.length > 0) {

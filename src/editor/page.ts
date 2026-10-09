@@ -67,7 +67,7 @@ function toThread(request: WithoutId<ThreadRequest>): Promise<unknown> {
 function onThread(event: MessageEvent<ThreadMessage>): void {
   const message = event.data
   if ('event' in message) {
-    send({ type: message.event })
+    send(message.event === 'selection' ? { type: 'selection', selection: message.selection } : { type: message.event })
     return
   }
   const settle = pending.get(message.id)
@@ -100,6 +100,7 @@ async function handle(request: Request): Promise<unknown> {
     return bytes.slice().buffer
   }
   if (request.type === 'isModified') return toThread({ cmd: 'isModified' })
+  if (request.type === 'getSelection') return toThread({ cmd: 'getSelection' })
   return toThread({ cmd: 'getText' })
 }
 
