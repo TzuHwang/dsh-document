@@ -1,0 +1,41 @@
+{
+  "name": "dsh-document",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Edit .doc, .docx and .odt in DeepSeek Harness with LibreOffice's own editor, beside the AI chat.",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/host.js",
+  "exports": {
+    ".": "./lib/host.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["lib/", "cordis.patch.yml"],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": { "platform": "web", "inject": ["@dsh-editor/core"] }
+  },
+  "dshVersion": "0.2.0-rc.2",
+  "dshEditor": {
+    "template": "github:TzuHwang/dsh-editor-template",
+    "release": "v0.1.0-dist",
+    "checkout": "../dsh-editor-template"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "dev:patch": "node scripts/dev-patch.mjs",
+    "smoke": "node smoke/run.mjs",
+    "install-command": "node scripts/install-command.mjs"
+  },
+  "devDependencies": {
+    "@dsh-editor/core": "link:../dsh-editor-template/packages/core",
+    "@types/node": "^22.20.1",
+    "@types/react": "^19.2.18",
+    "esbuild": "^0.28.2",
+    "playwright-core": "^1.56.0",
+    "react": "^19.2.8",
+    "typescript": "^6.0.3"
+  }
+}

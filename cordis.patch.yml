@@ -1,0 +1,14 @@
+# dsh-document's DSH bundle: the template's packages plus this project's plugin.
+# Install the template packages and this project top level (pnpm install-command);
+# do not also install @dsh-editor/bundle, whose rows these duplicate.
+- insert:
+    - id: dsh-editor-core          # settings live on this id
+      name: '@dsh-editor/core'
+    - id: dsh-editor-text
+      name: '@dsh-editor/text'
+    - id: dsh-editor-layout-main
+      name: '@dsh-editor/layout-main'
+    - id: dsh-editor-context
+      name: '@dsh-editor/context'
+    - id: dsh-document
+      name: dsh-document
