@@ -67,9 +67,11 @@ the self-managed engine API, `@dsh-editor/core` links to that checkout.
 
 ```sh
 pnpm install
+pnpm test                  # unit tests
 pnpm typecheck
-pnpm build                 # lib/host.js, lib/client.js
+pnpm build                 # lib/host.js, lib/client.js, lib/editor/
 pnpm smoke                 # builds both, installs them into a fresh DSH, checks in Edge
+pnpm test-site             # a DSH of its own to try the plugin by hand (see below)
 pnpm dev:patch             # .dev/dev.patch.yml: both checkouts, editor on
 dsh --profile web --patch .dev/dev.patch.yml
 ```
@@ -77,6 +79,11 @@ dsh --profile web --patch .dev/dev.patch.yml
 `dsh` options (`--profile`, `--patch`) go before app options (`--port`, `--no-open`). The smoke
 test uses the DSH version pinned in `package.json#dshVersion`, from this checkout's `.dev/`, the
 template checkout's, or a fresh install.
+
+`pnpm test-site` serves DSH on port 7790 (`TEST_SITE_PORT`) with a home of its own in
+`.dev/test-site/` (your own DSH home is not touched), both checkouts installed, Editor mode on, and
+sample documents in its workspace; open the printed URL in Chrome or Edge. Sign-in, settings and
+workspace files are kept between runs: `--no-build` skips the builds, `--reset` starts over.
 
 ## Release and install
 

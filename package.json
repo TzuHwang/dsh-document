@@ -38,6 +38,7 @@
     "test": "vitest run",
     "dev:patch": "node scripts/dev-patch.mjs",
     "smoke": "node smoke/run.mjs",
+    "test-site": "node scripts/test-site.mjs",
     "install-command": "node scripts/install-command.mjs"
   },
   "peerDependencies": {
