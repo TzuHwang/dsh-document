@@ -16,7 +16,14 @@
     "bundle": { "patch": "./cordis.patch.yml" },
     "client": {
       "platform": "web",
-      "inject": ["@dsh-editor/core", "@deepseek-ai/dsh-api-remotes", "@deepseek-ai/dsh-api-workspace-files", "@deepseek-ai/dsh-client-locale"]
+      "inject": [
+        "@dsh-editor/core",
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-api-workspace-files",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
     }
   },
   "dshVersion": "0.2.0-rc.2",
@@ -34,9 +41,11 @@
     "install-command": "node scripts/install-command.mjs"
   },
   "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
     "@deepseek-ai/schemastery": "~3.18.4"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
     "@deepseek-ai/schemastery": "~3.18.4",
     "@dsh-editor/core": "link:../dsh-editor-template/packages/core",
     "@types/node": "^22.20.1",

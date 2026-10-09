@@ -13,6 +13,12 @@ export const zh = {
   missing: '文件已被删除，继续编辑将重新创建。',
   retry: '重试',
   frameTitle: 'LibreOffice 文档编辑器',
+  'settings.nav': '文档编辑器',
+  'settings.title': '文档编辑器',
+  'settings.description': '在编辑器中用 LibreOffice 编辑 .doc、.docx 和 .odt 文档。',
+  'settings.confirmEdits': 'AI 修改文档前询问',
+  'settings.confirmEdits.on': 'AI 每次修改文档前都会请你确认。',
+  'settings.confirmEdits.off': 'AI 直接修改文档；修改会立即显示，可用一次 Ctrl+Z 撤销。',
 }
 
 export const en: typeof zh = {
@@ -29,4 +35,10 @@ export const en: typeof zh = {
   missing: 'This file was deleted. Keep editing to recreate it.',
   retry: 'Retry',
   frameTitle: 'LibreOffice document editor',
+  'settings.nav': 'Document editor',
+  'settings.title': 'Document editor',
+  'settings.description': 'Edit .doc, .docx and .odt documents in the editor with LibreOffice.',
+  'settings.confirmEdits': 'Ask before AI edits',
+  'settings.confirmEdits.on': 'The AI asks you before each document edit.',
+  'settings.confirmEdits.off': 'The AI edits documents directly; edits show at once and one Ctrl+Z undoes each.',
 }

@@ -101,6 +101,8 @@ async function handle(request: Request): Promise<unknown> {
   }
   if (request.type === 'isModified') return toThread({ cmd: 'isModified' })
   if (request.type === 'getSelection') return toThread({ cmd: 'getSelection' })
+  if (request.type === 'read') return toThread({ cmd: 'read', from: request.from, to: request.to })
+  if (request.type === 'edit') return toThread({ cmd: 'edit', operations: request.operations })
   return toThread({ cmd: 'getText' })
 }
 

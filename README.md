@@ -5,8 +5,8 @@ A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) plug
 of DSH, with the AI chat beside it. Built on
 [dsh-editor-template](https://github.com/TzuHwang/dsh-editor-template).
 
-**Status: early development.** Documents open in LibreOffice in the center and save back to their
-files; the AI tools are not done yet.
+**Status: early development.** Documents open in LibreOffice in the center, save back to their
+files, and the AI reads and edits them with its own tools.
 
 ## How it works
 
@@ -31,8 +31,14 @@ files; the AI tools are not done yet.
 - LibreOffice's interface is in English: the ZetaOffice CDN build ships only the en-US language
   pack (editing and displaying CJK text works). A self-hosted build with more language packs can
   be configured below.
-- Planned: the AI edits documents through tools that drive the open LibreOffice instance (UNO), so
-  changes show live and can be undone.
+- The AI has two tools. `document_read` returns the document as numbered blocks (paragraphs with
+  their style, tables), unsaved changes included. `document_edit` replaces text, inserts and
+  deletes paragraphs, sets paragraph styles and bold / italic / underline: in the user's
+  LibreOffice, so the change shows at once, as one undo step (one Ctrl+Z reverts it), all or
+  nothing, then saved to the file. A document that is not open opens in the center first. The
+  tools need the session open in DSH in the browser with Editor mode on; the host reaches the page
+  through a server-sent-events stream of its own.
+- Settings → Document editor: ask before each AI edit (on by default).
 
 Requirements: the DSH web app in a Chromium browser (Chrome or Edge; `Document-Isolation-Policy`
 is Chromium-only), and network access to the CDNs on first use.
@@ -48,6 +54,7 @@ LibreOffice from. Point them at your own copies to pin versions or work offline:
     zetaofficeUrl: https://cdn.zetaoffice.net/zetaoffice_latest/   # soffice.js / .wasm / .data
     zetajsUrl: https://cdn.jsdelivr.net/npm/zetajs@1.2.0/source/
     cjkFontUrl: https://cdn.jsdelivr.net/gh/notofonts/noto-cjk@Sans2.004/Sans/SubsetOTF/TC/NotoSansTC-Regular.otf   # '' for none
+    confirmEdits: true   # ask before each AI edit (Settings → Document editor changes it at once)
 ```
 
 The ZetaOffice CDN publishes only `zetaoffice_latest`, so by default LibreOffice updates with it.

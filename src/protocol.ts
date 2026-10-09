@@ -47,6 +47,38 @@ export function parseWriteQuery(search: string): WriteTarget | undefined {
   return { sessionId, path, ...version === null ? {} : { version } }
 }
 
+// ---- the AI's requests, host → DSH's page ----
+
+/**
+ * The page listens here (server-sent events) for {@link AgentRequest}s and
+ * answers each on {@link AGENT_REPLY_ROUTE}: DSH offers plugins no host → page
+ * call, so the plugin brings its own.
+ */
+export const AGENT_ROUTE = '/dsh-document/agent'
+export const AGENT_REPLY_ROUTE = '/dsh-document/agent/reply'
+
+export type AgentOperation =
+  | { readonly kind: 'read'; readonly from?: number | undefined; readonly to?: number | undefined }
+  | { readonly kind: 'edit'; readonly operations: readonly EditOperation[] }
+
+/** One AI tool call for a document of a session, sent to every open DSH page. */
+export interface AgentRequest {
+  readonly id: string
+  readonly sessionId: string
+  /** Workspace-relative, `/`-separated: as the session's file addresses carry it. */
+  readonly path: string
+  readonly operation: AgentOperation
+}
+
+/**
+ * A page's answer; `page` is the id the stream's first event (`event: page`)
+ * gave it. `unavailable`: this page does not show that session (another page
+ * may); any other failure is the call's result.
+ */
+export type AgentReply =
+  | { readonly id: string; readonly page: string; readonly ok: true; readonly value: unknown }
+  | { readonly id: string; readonly page: string; readonly ok: false; readonly error: string; readonly unavailable?: boolean }
+
 /** LibreOffice's export filter for each format this plugin writes. */
 export const EXPORT_FILTERS: Readonly<Record<string, string>> = {
   docx: 'MS Word 2007 XML',
@@ -79,6 +111,53 @@ export type Request =
   | { readonly type: 'isModified'; readonly id: number }
   /** Where the cursor and selection are; the reply's value is a {@link SelectionReport}. */
   | { readonly type: 'getSelection'; readonly id: number }
+  /** The document's blocks `from`–`to` (1-based, inclusive); the reply's value is a {@link DocumentRead}. */
+  | { readonly type: 'read'; readonly id: number; readonly from?: number | undefined; readonly to?: number | undefined }
+  /** Apply operations as one undo step; the reply's value is an {@link EditResult}. */
+  | { readonly type: 'edit'; readonly id: number; readonly operations: readonly EditOperation[] }
+
+// ---- the AI's view of a document ----
+
+/**
+ * One top-level block of the document body, numbered from 1 in document order:
+ * a paragraph (headings and list items are paragraphs with a style) or a table.
+ */
+export type DocumentBlock =
+  | { readonly index: number; readonly kind: 'paragraph'; readonly style: string; readonly text: string }
+  | { readonly index: number; readonly kind: 'table'; readonly rows: number; readonly columns: number; readonly text: string }
+
+export interface DocumentRead {
+  /** Blocks in the whole document. */
+  readonly total: number
+  readonly blocks: readonly DocumentBlock[]
+}
+
+/**
+ * One edit. Block numbers refer to the document as it is when the operation
+ * runs: operations apply in order, so later numbers shift after an insert or a
+ * delete (edit from the end backwards to keep them stable).
+ */
+export type EditOperation =
+  /** Replace text: in the whole document, or only in blocks `from`–`to`. */
+  | { readonly op: 'replace'; readonly find: string; readonly replace: string; readonly from?: number; readonly to?: number; readonly matchCase?: boolean }
+  /** Insert paragraphs (one per line of `text`) after block `after` (0: at the start). */
+  | { readonly op: 'insert'; readonly after: number; readonly text: string; readonly style?: string }
+  /** Delete paragraphs `from`–`to`. */
+  | { readonly op: 'delete'; readonly from: number; readonly to: number }
+  /** Give paragraphs `from`–`to` a paragraph style (e.g. "Heading 1"). */
+  | { readonly op: 'style'; readonly from: number; readonly to: number; readonly style: string }
+  /** Set bold / italic / underline on every occurrence of `find` (in blocks `from`–`to` when given). */
+  | {
+    readonly op: 'format'; readonly find: string; readonly from?: number; readonly to?: number; readonly matchCase?: boolean
+    readonly bold?: boolean; readonly italic?: boolean; readonly underline?: boolean
+  }
+
+export interface EditResult {
+  /** One line per operation, in order: what it changed. */
+  readonly applied: readonly string[]
+  /** Blocks in the document afterwards. */
+  readonly total: number
+}
 
 /**
  * Cursor and selection for the AI context, as the template's editor takes them
@@ -130,6 +209,8 @@ export type ThreadRequest =
   | { readonly cmd: 'export'; readonly id: number; readonly url: string; readonly filter: string }
   | { readonly cmd: 'isModified'; readonly id: number }
   | { readonly cmd: 'getSelection'; readonly id: number }
+  | { readonly cmd: 'read'; readonly id: number; readonly from?: number | undefined; readonly to?: number | undefined }
+  | { readonly cmd: 'edit'; readonly id: number; readonly operations: readonly EditOperation[] }
 
 export type ThreadMessage =
   | { readonly id: number; readonly ok: true; readonly value?: unknown }

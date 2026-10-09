@@ -5,13 +5,16 @@
  *
  * zetajs hands over UNO objects as dynamic proxies, so they are typed loosely here.
  */
-import type { SelectionReport, ThreadMessage, ThreadRequest } from '../protocol.ts'
+import type { ThreadMessage, ThreadRequest } from '../protocol.ts'
+import { DocumentOperations } from './operations.ts'
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- UNO proxies */
 interface ZetaJs {
   readonly mainPort: MessagePort
   readonly uno: any
-  readonly type: { interface(type: unknown): unknown }
+  readonly type: { interface(type: unknown): unknown; readonly float: unknown; readonly short: unknown }
+  readonly Any: new (type: unknown, value: unknown) => unknown
+  sameUnoObject(a: unknown, b: unknown): boolean
   getUnoComponentContext(): any
   unoObject(interfaces: readonly unknown[], implementation: object): any
   catchUnoException(error: unknown): any
@@ -115,39 +118,13 @@ function interceptCommands(frame: any): void {
   frame.registerDispatchProviderInterceptor(interceptor)
 }
 
-/** Selections longer than this are cut before they leave LibreOffice (the editor core cuts further for the AI). */
-const MAX_SELECTION_CHARS = 4000
 /** Selection reports wait for the cursor to rest. */
 const SELECTION_DEBOUNCE_MS = 250
 
-/**
- * The 1-based paragraph of `range` in the body text, or undefined inside a table, frame or note
- * (another text). Counted from the text before it in a few UNO calls: stepping paragraph by
- * paragraph costs one call each, too slow in long documents. A line break inside a paragraph
- * counts as one too.
- */
-function paragraphOf(range: any): number | undefined {
-  try {
-    const cursor = model.getText().createTextCursorByRange(range)
-    cursor.gotoStart(true)
-    const before = String(cursor.getString())
-    let paragraph = 1
-    for (let index = before.indexOf('\n'); index !== -1; index = before.indexOf('\n', index + 1)) paragraph++
-    return paragraph
-  } catch {
-    return undefined
-  }
-}
-
-/** Where the user is, for the AI context. Writer has no lines: paragraphs stand for them. */
-function selection(): SelectionReport {
-  const view = model.getCurrentController().getViewCursor()
-  const from = paragraphOf(view.getStart()) ?? 1
-  const to = paragraphOf(view.getEnd()) ?? from
-  let text = ''
-  try { text = String(view.getString()) } catch { /* not text, e.g. a selected image */ }
-  return { cursorLine: to, fromLine: from, toLine: to, text: text.length > MAX_SELECTION_CHARS ? text.slice(0, MAX_SELECTION_CHARS) : text }
-}
+/** The open document's reads, edits and block numbering; one per document, it keeps the block list. */
+let operations: DocumentOperations | undefined
+/** The open document's modify listener, taken off while the AI edits (see `edit`). */
+let modifyListener: any
 
 /** Report the selection whenever it changes and comes to rest. */
 function watchSelection(controller: any): void {
@@ -158,7 +135,10 @@ function watchSelection(controller: any): void {
       clearTimeout(timer)
       timer = setTimeout(() => {
         try {
-          post({ event: 'selection', selection: selection() })
+          // Only while the block list is current: after a change (typing) the report waits for
+          // a forced one (getSelection, e.g. when focus leaves the editor for the chat).
+          const report = operations?.selection(false)
+          if (report !== undefined) post({ event: 'selection', selection: report })
         } catch {
           // The document closed meanwhile.
         }
@@ -176,21 +156,45 @@ function open(url: string | undefined): void {
   const loaded = desktop.loadComponentFromURL(url ?? 'private:factory/swriter', '_default', 0, [])
   if (loaded === null || loaded === undefined) throw new Error('LibreOffice could not load the document')
   model = loaded
-  model.addModifyListener(zetajs.unoObject([css.util.XModifyListener], {
+  const opened = new DocumentOperations(zetajs, css, loaded)
+  operations = opened
+  modifyListener = zetajs.unoObject([css.util.XModifyListener], {
     disposing() {},
-    // Also called when the flag is reset (after an export): only a change counts.
-    modified() { if (loaded.isModified()) post({ event: 'modified' }) },
-  }))
+    modified() {
+      // Every change may move block numbers.
+      opened.invalidate()
+      // Also called when the flag is reset (after an export): only a change counts.
+      if (loaded.isModified()) post({ event: 'modified' })
+    },
+  })
+  model.addModifyListener(modifyListener)
   const controller = model.getCurrentController()
-  // The first selection read is slow (zetajs resolves the UNO types it touches, seconds): pay it
-  // now, while the engine still shows "opening", not when the user first moves the cursor.
-  selection()
+  // The first selection read is slow (zetajs resolves the UNO types it touches, seconds), and
+  // lists the blocks: pay it now, while the engine still shows "opening".
+  opened.selection(true)
   watchSelection(controller)
   const frame = controller.getFrame()
   interceptCommands(frame)
   // A full-screen window follows Qt's screen, which is the canvas: it fills it, tracks its size,
   // and has no title bar (whose close button would end LibreOffice).
   frame.getContainerWindow().FullScreen = true
+}
+
+/**
+ * The AI's edit. LibreOffice notifies modify listeners once or twice per paragraph it
+ * touches, and each notification is a round trip into JavaScript (tens of milliseconds
+ * in all): the listener is off while the edit runs, and the change is reported once after.
+ */
+function edit(request: Extract<ThreadRequest, { cmd: 'edit' }>): unknown {
+  if (operations === undefined) throw new Error('no document is open')
+  model.removeModifyListener(modifyListener)
+  try {
+    return operations.edit(request.operations)
+  } finally {
+    model.addModifyListener(modifyListener)
+    operations.invalidate()
+    if (model.isModified()) post({ event: 'modified' })
+  }
 }
 
 /** Store a copy at `url` (the in-memory file system) with `filter`; the document then counts as saved. */
@@ -210,7 +214,11 @@ port.onmessage = (event: MessageEvent<ThreadRequest>) => {
     else if (request.cmd === 'getText') value = model === undefined ? '' : model.getText().getString()
     else if (request.cmd === 'export') exportTo(request.url, request.filter)
     else if (request.cmd === 'isModified') value = model !== undefined && model.isModified() === true
-    else if (request.cmd === 'getSelection') value = model === undefined ? undefined : selection()
+    else if (request.cmd === 'getSelection') value = operations?.selection(true)
+    else if (request.cmd === 'read') {
+      if (operations === undefined) throw new Error('no document is open')
+      value = operations.read(request.from, request.to)
+    } else if (request.cmd === 'edit') value = edit(request)
     post({ id: request.id, ok: true, value })
   } catch (error) {
     post({ id: request.id, ok: false, error: describe(error) })

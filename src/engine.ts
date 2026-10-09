@@ -11,8 +11,23 @@
  */
 import type { SelfManagedEngine, Translate } from '@dsh-editor/core'
 import { fileIO, watchFile, type WorkspaceFiles } from './file-io.ts'
-import { CHANNEL, EDITOR_ROUTE, isEnvelope, type Envelope, type FromEditor, type Request, type SelectionReport, type WithoutId } from './protocol.ts'
+import { CHANNEL, EDITOR_ROUTE, isEnvelope, type DocumentRead, type EditOperation, type EditResult, type Envelope, type FromEditor, type Request, type SelectionReport, type WithoutId } from './protocol.ts'
 import { FileSync, type SyncStatus } from './sync.ts'
+
+/** A mounted document as the AI's tools reach it (see bridge.ts). */
+export interface OpenDocument {
+  readonly sessionId: string
+  /** Workspace-relative, as the session's file addresses carry it. */
+  readonly path: string
+  /** Settles when LibreOffice shows the document; rejects when it cannot. */
+  readonly ready: Promise<void>
+  read(from: number | undefined, to: number | undefined): Promise<DocumentRead>
+  /** Edit as one undo step, then save; `saved` says whether the file now has it. */
+  edit(operations: readonly EditOperation[]): Promise<EditResult & { readonly saved: boolean; readonly status: string }>
+}
+
+/** Where mounted documents announce themselves; returns the function that withdraws one. */
+export type DocumentRegistry = (document: OpenDocument) => () => void
 
 /** Formats LibreOffice Writer opens and saves. */
 export const EXTENSIONS = ['doc', 'docx', 'odt'] as const
@@ -62,7 +77,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
 
 const reason = (error: unknown): string => error instanceof Error ? error.message : String(error)
 
-export function createDocumentEngine(files: WorkspaceFiles, t: Translate): SelfManagedEngine {
+export function createDocumentEngine(files: WorkspaceFiles, t: Translate, register: DocumentRegistry): SelfManagedEngine {
   return {
     id: 'dsh-document',
     extensions: EXTENSIONS,
@@ -202,10 +217,18 @@ export function createDocumentEngine(files: WorkspaceFiles, t: Translate): SelfM
 
       // ---- startup ----
 
+      let settleReady!: (opened: boolean, reason?: string) => void
+      const ready = new Promise<void>((resolve, reject) => {
+        settleReady = (opened, why) => opened ? resolve() : reject(new Error(why))
+      })
+      // A failed start is reported to a waiting tool call, not left unhandled.
+      ready.catch(() => {})
+
       const fail = (message: string): void => {
         if (destroyed || root.dataset.state === 'failed') return
         clearTimeout(timer)
         setState('failed', message)
+        settleReady(false, message)
       }
       const timer = setTimeout(() => fail(t('error.timeout')), START_TIMEOUT_MS)
 
@@ -222,6 +245,7 @@ export function createDocumentEngine(files: WorkspaceFiles, t: Translate): SelfM
             'LibreOffice did not export the document in time',
           )))
           setState('ready')
+          settleReady(true)
           // A freshly opened file is what the user is looking at: tell the AI right away.
           void reportSelection(false)
         } catch (error) {
@@ -243,8 +267,12 @@ export function createDocumentEngine(files: WorkspaceFiles, t: Translate): SelfM
           case 'failed': fail(t('error.start', { reason: message.message })); break
           case 'modified': if (root.dataset.state === 'ready') sync.touch(); break
           case 'selection': if (!destroyed) binding.onSelection(message.selection, false); break
-          // Leaving the editor (e.g. to message the AI) and Ctrl+S save now.
+          // Leaving the editor (e.g. to message the AI) saves now, and tells the AI where the
+          // user was: while typing, the block numbers of selection reports are not kept current.
           case 'blur':
+            void saveNow()
+            void reportSelection(false)
+            break
           case 'saveRequested': void saveNow(); break
           case 'reply': {
             const waiting = pending.get(message.id)
@@ -256,7 +284,21 @@ export function createDocumentEngine(files: WorkspaceFiles, t: Translate): SelfM
       }
       window.addEventListener('message', onMessage)
 
+      const withdraw = register({
+        sessionId: binding.sessionId,
+        path: binding.path,
+        ready,
+        read: async (from, to) => request({ type: 'read', from, to }) as Promise<DocumentRead>,
+        edit: async (operations) => {
+          const result = await request({ type: 'edit', operations }) as EditResult
+          // The AI reads files from disk too: the edit goes there now, not after the autosave pause.
+          await saveNow()
+          return { ...result, saved: sync.status.kind === 'clean', status: sync.status.kind }
+        },
+      })
+
       const cleanup = (): void => {
+        withdraw()
         destroyed = true
         clearTimeout(timer)
         watcher.abort()
@@ -266,6 +308,7 @@ export function createDocumentEngine(files: WorkspaceFiles, t: Translate): SelfM
         window.removeEventListener('message', onMessage)
         for (const waiting of pending.values()) waiting.reject(new Error('the editor closed'))
         pending.clear()
+        settleReady(false, 'the editor closed')
         root.remove()
       }
 

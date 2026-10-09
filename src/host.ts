@@ -12,22 +12,33 @@
 import { readFileSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import z from '@deepseek-ai/schemastery'
+import { AgentChannel } from './agent-channel.ts'
 import {
+  AGENT_REPLY_ROUTE,
+  AGENT_ROUTE,
   EDITOR_ROUTE,
   EDITOR_SCRIPT_ROUTE,
   MAX_WRITE_BYTES,
   THREAD_SCRIPT_ROUTE,
   WRITE_ROUTE,
   parseWriteQuery,
+  type AgentReply,
   type EditorConfig,
 } from './protocol.ts'
+import { registerTools, type FsTarget, type ToolsHost } from './tools.ts'
 import { StaleVersionError, replaceBytes } from './write-bytes.ts'
 
 export const name = 'dsh-document'
-export const inject = ['webServer', 'connection', 'fs', 'sessions', 'sandboxPolicy']
+export const inject = ['webServer', 'connection', 'fs', 'sessions', 'sandboxPolicy', 'tools']
 
-/** Where the editor page loads LibreOffice and its helpers from; point them at your own copies to pin or self-host. */
-export interface Config extends EditorConfig {}
+/**
+ * Where the editor page loads LibreOffice and its helpers from (point them at
+ * your own copies to pin or self-host), and whether the AI's edits ask first.
+ */
+export interface Config extends EditorConfig {
+  /** Volatile: the settings page changes it while DSH runs; read with `.get()`. */
+  confirmEdits: { get(): boolean | undefined }
+}
 
 export const Config = z.object({
   zetaofficeUrl: z.string().default('https://cdn.zetaoffice.net/zetaoffice_latest/')
@@ -36,11 +47,13 @@ export const Config = z.object({
     .description('Base URL of zetajs\'s source/ directory, ending in /.'),
   cjkFontUrl: z.string().default('https://cdn.jsdelivr.net/gh/notofonts/noto-cjk@Sans2.004/Sans/SubsetOTF/TC/NotoSansTC-Regular.otf')
     .description('A CJK font installed into LibreOffice before it starts; empty for none.'),
+  confirmEdits: z.boolean().default(true)
+    .description('Ask the user before each document edit by the AI.')
+    .volatile(),
 })
 
 // Host services, typed locally.
-interface FsTarget { readonly __target: unique symbol }
-interface HostContext {
+interface HostContext extends ToolsHost {
   effect(factory: () => () => void, label?: string): () => void
   get(name: string): unknown
   webServer: { register(route: { kind: 'exact'; path: string; handler: (req: IncomingMessage, res: ServerResponse) => Promise<void> }): () => void }
@@ -181,4 +194,32 @@ export function apply(ctx: HostContext, config: Config): void {
   }
 
   register(WRITE_ROUTE, (req, res) => save(ctx, req, res))
+
+  // The AI's tools run in the user's open DSH page; this channel reaches it.
+  const channel = new AgentChannel()
+  ctx.effect(() => () => channel.dispose(), 'dsh-document: agent channel')
+  register(AGENT_ROUTE, async (req, res) => {
+    if (req.method !== 'GET') {
+      res.statusCode = 405
+      res.setHeader('allow', 'GET')
+      res.end()
+      return
+    }
+    channel.connect(req, res)
+  })
+  register(AGENT_REPLY_ROUTE, async (req, res) => {
+    if (req.method !== 'POST') {
+      res.setHeader('allow', 'POST')
+      sendJson(res, 405, { error: 'method-not-allowed' })
+      return
+    }
+    try {
+      channel.reply(JSON.parse((await readBody(req)).toString('utf8')) as AgentReply)
+      res.statusCode = 204
+      res.end()
+    } catch {
+      sendJson(res, 400, { error: 'bad-request' })
+    }
+  })
+  registerTools(ctx, channel, () => config.confirmEdits.get() !== false)
 }

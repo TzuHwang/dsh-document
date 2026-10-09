@@ -13,8 +13,9 @@ import { spawn, spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright-core'
+import { startMockLlm, userTurns } from './mock-llm.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const posix = path => path.split('\\').join('/')
@@ -88,6 +89,8 @@ mkdirSync(workspace, { recursive: true })
 writeFileSync(join(workspace, 'notes.md'), '# Notes\n\nfirst line\n')
 // Saved by LibreOffice; each holds the same text, Chinese included.
 for (const extension of ['docx', 'doc', 'odt']) copyFileSync(join(root, 'smoke', 'fixtures', `sample.${extension}`), join(workspace, `sample.${extension}`))
+// Paragraphs, a line break inside one, and a table: blocks P1, P2, the table, P4, P5.
+copyFileSync(join(root, 'smoke', 'fixtures', 'blocks.docx'), join(workspace, 'blocks.docx'))
 const overlay = join(temp, 'smoke.patch.yml')
 writeFileSync(overlay, [
   '- id: workspace-controller',
@@ -107,9 +110,8 @@ dsh(['plugin', '--profile', 'smoke', 'add',
   ...['core', 'text', 'layout-main', 'context'].map(dir => posix(join(template, 'packages', dir))),
   posix(root)])
 
-// The template's local stand-in for the model API: records what the AI is sent.
-const { startMockLlm, userTurns } = await import(pathToFileURL(join(template, 'smoke', 'mock-llm.mjs')).href)
-const llm = await startMockLlm(posix(workspace))
+// A local stand-in for the model API: records what the AI is sent, calls the document tools on cue.
+const llm = await startMockLlm()
 let server
 let browser
 let page
@@ -268,6 +270,62 @@ try {
   await center.locator('[role=tab]').filter({ hasText: 'sample.odt' }).getByRole('button').click()
   check('odt: closing its tab saves a pending change first', await eventually(() => diskText('sample.odt').includes('closing'), 20_000), diskText('sample.odt'))
   check('odt: it is still an OpenDocument (a zip)', diskBytes('sample.odt').subarray(0, 4).toString('hex') === '504b0304')
+
+  // ---- the AI's document tools (M4) ----
+  await openFromFiles('sample.docx')
+  check('tools: back on sample.docx', await eventually(async () => (await state()) === 'ready' && String(await documentText()).includes('Hello from dsh_document')))
+  await page.getByTestId('dsh-editor-open-chat').click()
+  const sendFromChat = async (text) => {
+    await chatInput.click()
+    await page.keyboard.type(text)
+    await page.keyboard.press('Enter')
+  }
+  const toolResult = needle => userTurns(llm.requests).some(parts => parts.some(part => part.startsWith('[tool_result]') && part.includes(needle)))
+  const declared = () => llm.requests.some(request => (request.body.tools ?? []).some(tool => tool.name === 'document_edit'))
+  check('tools: the AI is offered document_read and document_edit', declared())
+  await sendFromChat('TRIGGER_DOC_READ')
+  check('tools: document_read gives the AI the numbered blocks with their styles', await eventually(() =>
+    toolResult('[2] (Standard) Hello from dsh_document'), 30_000), userTurns(llm.requests).at(-1))
+
+  await sendFromChat('TRIGGER_DOC_EDIT')
+  const allow = chat.getByRole('button', { name: /^(允许一次|Allow once)$/ })
+  check('tools: an edit asks the user first (the default)', await eventually(async () => (await allow.count()) > 0, 30_000))
+  await allow.first().click()
+  check('tools: the edit shows in the editor', await eventually(async () => String(await documentText()).includes('Rewritten by the AI'), 30_000))
+  check('tools: it is saved to the file', await eventually(() => diskText('sample.docx').includes('Rewritten by the AI'), 20_000), diskText('sample.docx'))
+  check('tools: the AI is told what changed', await eventually(() => toolResult('Edited sample.docx as one undo step')), userTurns(llm.requests).at(-1))
+  const undoBox = await engine.locator('iframe').boundingBox()
+  await page.mouse.click(undoBox.x + undoBox.width * 0.4, undoBox.y + undoBox.height * 0.6)
+  await page.keyboard.press('Control+z')
+  check('tools: one Ctrl+Z undoes the whole edit', await eventually(async () => {
+    const text = String(await documentText())
+    return text.includes('Second paragraph') && !text.includes('Rewritten by the AI')
+  }))
+
+  await page.getByText(/^(设置|Settings)$/).last().click()
+  await page.getByText(/^(文档编辑器|Document editor)$/).first().click()
+  const confirmSwitch = page.getByTestId('dsh-document-settings-confirm').getByRole('switch')
+  check('settings: a Document editor page asks before AI edits by default', await eventually(async () => (await confirmSwitch.getAttribute('aria-checked')) === 'true'))
+  await confirmSwitch.click()
+  check('settings: turning it off saves to the profile', await eventually(() =>
+    /confirmEdits: false/.test(readFileSync(join(home, 'profiles', 'smoke', 'cordis.patch.yml'), 'utf8'))))
+  await page.keyboard.press('Escape')
+  await sendFromChat('TRIGGER_DOC_EDIT_CLOSED')
+  check('tools: editing a document that is not open opens it in the center', await eventually(async () =>
+    (await center.locator('[role=tab]').allInnerTexts()).some(text => text.includes('sample.odt')), 30_000))
+  check('tools: and edits and saves it, without asking once the setting is off', await eventually(() =>
+    diskText('sample.odt').includes('Added by the AI'), 60_000) && (await allow.count()) === 0, diskText('sample.odt'))
+
+  // ---- block numbers: the AI context and the tools count the same blocks ----
+  await openFromFiles('blocks.docx')
+  check('blocks: a document with a table opens', await eventually(async () => (await state()) === 'ready', 60_000))
+  const blocksBox = await engine.locator('iframe').boundingBox()
+  await page.mouse.click(blocksBox.x + blocksBox.width * 0.4, blocksBox.y + blocksBox.height * 0.6)
+  // P1, the two lines of P2, then the table's first row.
+  for (const key of ['Control+Home', 'ArrowDown', 'ArrowDown', 'ArrowDown']) await page.keyboard.press(key)
+  await page.getByTestId('dsh-editor-open-chat').click()
+  check('blocks: a cursor in the table is in block 3, the table, as document_read numbers it', await eventually(async () =>
+    (await chip.innerText()).includes('blocks.docx:3')), await chip.innerText().catch(() => ''))
 
   await openFromFiles('notes.md')
   check('a text file still opens in the template\'s text editor', await eventually(async () => (await center.locator('.cm-line').count()) > 2))
