@@ -64,6 +64,15 @@ if (runtime === undefined) {
   run('npm', ['install', '--no-audit', '--no-fund', `@deepseek-ai/dsh@${manifest.dshVersion}`], { cwd: runtime })
 }
 const dshBin = binOf(runtime)
+// DSH ships LibreOffice for conversions (host side): it reads what the editor wrote, independently.
+const officeCli = join(runtime, 'node_modules', '@deepseek-ai', 'libreoffice-kit', 'lib', 'cli.js')
+let conversions = 0
+/** The text of a workspace document as it is on disk ('' when it cannot be read). */
+function diskText(name) {
+  const output = join(temp, `extract-${++conversions}.txt`)
+  spawnSync(process.execPath, [officeCli, 'convert', '--input', join(workspace, name), '--output', output], { stdio: 'ignore' })
+  return existsSync(output) ? readFileSync(output, 'utf8') : ''
+}
 if (!args.has('--no-build')) {
   run('pnpm', ['build'], { cwd: template })
   run('pnpm', ['build'], { cwd: root })
@@ -157,11 +166,12 @@ try {
   const center = page.getByTestId('dsh-editor-center')
   check('the editor shows in the center for a new session', await eventually(async () => (await center.count()) > 0))
 
-  const engine = center.getByTestId('dsh-document')
+  // The visible one: a closing view stays in the page, hidden, until it saved.
+  const engine = center.locator('[data-testid=dsh-document]:visible')
   const state = async () => (await engine.count()) > 0 ? engine.getAttribute('data-state') : undefined
   /** The open document's text, asked of the editor page over the engine's own protocol. */
   const documentText = () => page.evaluate(() => new Promise((resolve, reject) => {
-    const frame = document.querySelector('[data-testid=dsh-document] iframe')
+    const frame = [...document.querySelectorAll('[data-testid=dsh-document] iframe')].find(element => element.getClientRects().length > 0)
     const id = 1e9 + Math.floor(Math.random() * 1e6)
     const onMessage = (event) => {
       const data = event.data
@@ -181,12 +191,59 @@ try {
     check(`${name}: LibreOffice opens it in the center, Chinese included`, ready && /Hello from dsh_document\. 中文測試。/.test(text), text)
   }
 
+  /** Type at the end of the document (a click below the text puts the cursor there). */
+  const typeInDocument = async (text) => {
+    const box = await engine.locator('iframe').boundingBox()
+    await page.mouse.click(box.x + box.width * 0.4, box.y + box.height * 0.6)
+    await page.keyboard.type(text)
+  }
+  /** Focus leaves the editor: a click on the empty left sidebar. */
+  const clickOutside = () => page.mouse.click(140, 600)
+  const diskBytes = name => readFileSync(join(workspace, name))
+  const sync = () => engine.getAttribute('data-sync')
+
   await opensWithText('sample.docx')
   check('the core leaves it alone (no status line)', (await center.getByTestId('dsh-editor-status').count()) === 0)
   check('the editor page is isolated (SharedArrayBuffer available)', await page.frame({ url: /dsh-document\/editor/ })?.evaluate(() => self.crossOriginIsolated) === true)
   await page.screenshot({ path: join(temp, 'docx.png') })
+
+  // ---- saving (M2) ----
+  await typeInDocument(' saved-on-blur')
+  await clickOutside()
+  check('docx: leaving the editor saves the document to its file', await eventually(() => diskText('sample.docx').includes('saved-on-blur'), 20_000), diskText('sample.docx'))
+  check('docx: it is still a .docx (a zip) with its text', diskBytes('sample.docx').subarray(0, 4).toString('hex') === '504b0304' && diskText('sample.docx').includes('中文測試'))
+  await typeInDocument(' saved-by-ctrl-s')
+  await page.keyboard.press('Control+s')
+  check('docx: Ctrl+S in LibreOffice saves to the file', await eventually(() => diskText('sample.docx').includes('saved-by-ctrl-s'), 20_000), diskText('sample.docx'))
+  await typeInDocument(' autosaved')
+  check('docx: a pause in editing autosaves', await eventually(() => diskText('sample.docx').includes('autosaved'), 20_000), diskText('sample.docx'))
+  check('docx: then it is clean', await eventually(async () => (await sync()) === 'clean'))
+  const edited = diskBytes('sample.docx')
+
+  copyFileSync(join(root, 'smoke', 'fixtures', 'sample.docx'), join(workspace, 'sample.docx'))
+  check('docx: a change on disk reloads a clean document', await eventually(async () =>
+    !String(await documentText()).includes('autosaved') && (await sync()) === 'clean', 20_000))
+
+  await typeInDocument(' mine')
+  writeFileSync(join(workspace, 'sample.docx'), edited)
+  const banner = engine.getByTestId('dsh-document-banner')
+  check('docx: a change on disk while edits are pending is a conflict', await eventually(async () => (await sync()) === 'conflict' && await banner.isVisible(), 20_000))
+  await banner.getByRole('button', { name: /^(保留我的版本|Keep my version)$/ }).click()
+  check('docx: keeping mine writes the editor\'s document over it', await eventually(() =>
+    diskText('sample.docx').includes(' mine') && !diskText('sample.docx').includes('autosaved'), 20_000), diskText('sample.docx'))
+
   await opensWithText('sample.doc')
+  await typeInDocument(' doc-edit')
+  await clickOutside()
+  check('doc: saving keeps the Word 97 format, with the edit', await eventually(() =>
+    diskBytes('sample.doc').subarray(0, 4).toString('hex') === 'd0cf11e0' && diskText('sample.doc').includes('doc-edit'), 20_000), diskText('sample.doc'))
+
   await opensWithText('sample.odt')
+  await typeInDocument(' closing')
+  // Straight to the tab's close button: the pending change is saved before the editor goes.
+  await center.locator('[role=tab]').filter({ hasText: 'sample.odt' }).getByRole('button').click()
+  check('odt: closing its tab saves a pending change first', await eventually(() => diskText('sample.odt').includes('closing'), 20_000), diskText('sample.odt'))
+  check('odt: it is still an OpenDocument (a zip)', diskBytes('sample.odt').subarray(0, 4).toString('hex') === '504b0304')
 
   await openFromFiles('notes.md')
   check('a text file still opens in the template\'s text editor', await eventually(async () => (await center.locator('.cm-line').count()) > 2))

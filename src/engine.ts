@@ -2,32 +2,39 @@
  * The document engine: LibreOffice in an isolated iframe (the editor page the
  * host serves), mounted by the template's editor as a self-managed engine.
  *
- * It reads the file's bytes itself (DSH's workspaceFiles), waits for the
- * editor page to report LibreOffice ready, and hands them over to open.
- * Saving comes next (M2); until then edits stay in the editor.
+ * It keeps the document in sync with its file itself ({@link FileSync}):
+ * reads and watches it through DSH's workspaceFiles, has LibreOffice export
+ * the document when saving (after a pause in editing, when focus leaves the
+ * editor, on Ctrl+S, when the view closes), and writes through the plugin's
+ * save route. A change on disk reloads a clean document, and is a conflict
+ * prompt while changes are pending.
  */
 import type { SelfManagedEngine, Translate } from '@dsh-editor/core'
+import { fileIO, watchFile, type WorkspaceFiles } from './file-io.ts'
 import { CHANNEL, EDITOR_ROUTE, isEnvelope, type Envelope, type FromEditor, type Request, type WithoutId } from './protocol.ts'
+import { FileSync, type SyncStatus } from './sync.ts'
 
 /** Formats LibreOffice Writer opens and saves. */
 export const EXTENSIONS = ['doc', 'docx', 'odt'] as const
 
 /** How long LibreOffice may take to start (download included) before the engine gives up. */
 const START_TIMEOUT_MS = 180_000
+/** Pause in editing before an autosave; exporting a document is costly. */
+const AUTOSAVE_MS = 2_000
+/** How long an export may take before the save fails (and stays pending for a retry). */
+const EXPORT_TIMEOUT_MS = 30_000
+/** How long a quick question to LibreOffice may take; closing must not hang on it. */
+const ASK_TIMEOUT_MS = 10_000
 
-/** DSH's `ctx.remote.workspaceFiles`, Client face: the part used here. */
-export interface WorkspaceFiles {
-  readBytes(sessionId: string, path: string, options: object): Promise<
-    | { readonly ok: true; readonly value: { readonly data: Uint8Array } }
-    | { readonly ok: false; readonly error: { readonly code: string } }
-  >
-}
-
-/** The engine's state, on its root element as `data-state` (and for the smoke test). */
+/** The engine's state, on its root element as `data-state`; the sync status is `data-sync`. */
 type State = 'starting' | 'opening' | 'ready' | 'failed'
 
 const STYLE = `
-.dsh-document { position: relative; height: 100%; min-height: 0; }
+.dsh-document { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.dsh-document__banner { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; padding: 6px 10px; background: color-mix(in srgb, #f5a623 18%, transparent); }
+.dsh-document__banner[hidden] { display: none; }
+.dsh-document__banner button { font: inherit; padding: 1px 8px; border-radius: 4px; border: 1px solid color-mix(in srgb, currentColor 25%, transparent); background: transparent; color: inherit; cursor: pointer; }
+.dsh-document__body { position: relative; flex: 1; min-height: 0; }
 .dsh-document__frame { display: block; width: 100%; height: 100%; border: 0; }
 .dsh-document__notice { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; text-align: center; font-size: 13px; background: var(--dsw-alias-bg-l1, Canvas); }
 .dsh-document__notice[hidden] { display: none; }
@@ -42,16 +49,18 @@ function ensureStyle(document: Document): void {
   document.head.appendChild(style)
 }
 
-/** The file's bytes, or undefined when it is missing or empty (LibreOffice then starts a new document). */
-async function readFile(files: WorkspaceFiles, sessionId: string, path: string): Promise<ArrayBuffer | undefined> {
-  const result = await files.readBytes(sessionId, path, {})
-  if (!result.ok) {
-    if (result.error.code === 'workspace-file/not-found') return undefined
-    throw new Error(result.error.code)
-  }
-  // A copy: the remote's array may view a larger buffer, and this one is transferred.
-  return result.value.data.byteLength === 0 ? undefined : result.value.data.slice().buffer
+/** `promise`, or a rejection after `ms`: a stuck export must not stall the save queue. */
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms)
+    promise.then(
+      value => { clearTimeout(timer); resolve(value) },
+      (error: unknown) => { clearTimeout(timer); reject(error instanceof Error ? error : new Error(String(error))) },
+    )
+  })
 }
+
+const reason = (error: unknown): string => error instanceof Error ? error.message : String(error)
 
 export function createDocumentEngine(files: WorkspaceFiles, t: Translate): SelfManagedEngine {
   return {
@@ -62,16 +71,23 @@ export function createDocumentEngine(files: WorkspaceFiles, t: Translate): SelfM
       const document = host.ownerDocument
       const window = document.defaultView!
       ensureStyle(document)
-      const root = document.createElement('div')
-      root.className = 'dsh-document'
+      const el = (tag: string, className: string): HTMLElement => {
+        const node = document.createElement(tag)
+        node.className = className
+        return node
+      }
+      const root = el('div', 'dsh-document')
       root.dataset.testid = 'dsh-document'
-      const frame = document.createElement('iframe')
-      frame.className = 'dsh-document__frame'
+      const banner = el('div', 'dsh-document__banner')
+      banner.dataset.testid = 'dsh-document-banner'
+      banner.hidden = true
+      const body = el('div', 'dsh-document__body')
+      const frame = el('iframe', 'dsh-document__frame') as HTMLIFrameElement
       frame.title = t('frameTitle')
       frame.src = EDITOR_ROUTE.slice(1)
-      const notice = document.createElement('div')
-      notice.className = 'dsh-document__notice'
-      root.append(frame, notice)
+      const notice = el('div', 'dsh-document__notice')
+      body.append(frame, notice)
+      root.append(banner, body)
       host.append(root)
 
       let destroyed = false
@@ -81,6 +97,8 @@ export function createDocumentEngine(files: WorkspaceFiles, t: Translate): SelfM
         notice.textContent = text ?? ''
       }
       setState('starting', t('loading'))
+
+      // ---- talking to the editor page ----
 
       /** Requests waiting for the editor page, by id. */
       const pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>()
@@ -92,52 +110,155 @@ export function createDocumentEngine(files: WorkspaceFiles, t: Translate): SelfM
           const envelope = { ...message, id, channel: CHANNEL } as Envelope<Request>
           frame.contentWindow?.postMessage(envelope, window.location.origin, transfer)
         })
+      /** Open `bytes` in LibreOffice (a copy is transferred); empty bytes start a new document. */
+      const openInEditor = (bytes: Uint8Array): Promise<unknown> => {
+        if (bytes.length === 0) return request({ type: 'open', bytes: undefined, extension: binding.extension })
+        const copy = bytes.slice().buffer
+        return request({ type: 'open', bytes: copy, extension: binding.extension }, [copy])
+      }
 
-      const fail = (text: string): void => {
+      // ---- the file ----
+
+      const file = { sessionId: binding.sessionId, path: binding.path }
+      const sync = new FileSync(fileIO(files, file), { debounceMs: AUTOSAVE_MS })
+      const watcher = new AbortController()
+      const loaded = sync.load()
+
+      /**
+       * `modified` events trail the input LibreOffice is still processing; before deciding
+       * anything on "no changes" (saving, taking a change from disk), ask it. The answer comes
+       * after keys typed just before, so those count.
+       */
+      const markIfModified = async (): Promise<void> => {
+        if (root.dataset.state !== 'ready') return
+        try {
+          const modified = await withTimeout(request({ type: 'isModified' }), ASK_TIMEOUT_MS, 'LibreOffice did not answer')
+          if (modified === true) sync.touch()
+        } catch {
+          // The editor is gone; go by what is known.
+        }
+      }
+      void loaded.then(() => {
+        if (destroyed) return
+        // Never reload over typing that has not been reported yet: that would be a conflict.
+        watchFile(files, file, version => { void markIfModified().then(() => sync.externalChange(version)) }, watcher.signal)
+      }, () => {})
+
+      const button = (label: string, onClick: () => void): HTMLElement => {
+        const node = document.createElement('button')
+        node.type = 'button'
+        node.textContent = label
+        node.addEventListener('click', onClick)
+        return node
+      }
+      const text = (content: string): HTMLElement => {
+        const node = document.createElement('span')
+        node.textContent = content
+        return node
+      }
+      let previous: SyncStatus['kind'] = 'loading'
+      const renderStatus = (status: SyncStatus): void => {
+        root.dataset.sync = status.kind
+        banner.replaceChildren()
+        if (status.kind === 'conflict') {
+          banner.append(
+            text(t('conflict.message')),
+            button(t('conflict.useDisk'), () => { void sync.resolveConflict('disk') }),
+            button(t('conflict.keepMine'), () => { void sync.resolveConflict('mine') }),
+          )
+        } else if (status.kind === 'error') {
+          banner.append(text(t('error.save', { reason: status.message })), button(t('retry'), () => { void sync.flush() }))
+        } else if (status.kind === 'missing' && previous !== 'loading') {
+          // Missing when opened is a new file, not a deleted one.
+          banner.append(text(t('missing')))
+        }
+        banner.hidden = banner.childElementCount === 0
+        previous = status.kind
+      }
+      const unsubscribe = sync.subscribe({
+        status: renderStatus,
+        external: (bytes) => {
+          // The file changed on disk while the document was clean: show the new version.
+          openInEditor(bytes).catch((error: unknown) => {
+            banner.replaceChildren(text(t('error.reload', { reason: reason(error) })))
+            banner.hidden = false
+          })
+        },
+      })
+      renderStatus(sync.status)
+
+      // ---- startup ----
+
+      const fail = (message: string): void => {
         if (destroyed || root.dataset.state === 'failed') return
         clearTimeout(timer)
-        setState('failed', text)
+        setState('failed', message)
       }
       const timer = setTimeout(() => fail(t('error.timeout')), START_TIMEOUT_MS)
 
+      let detachSource: (() => void) | undefined
       const open = async (): Promise<void> => {
         clearTimeout(timer)
         setState('opening', t('opening'))
         try {
-          const bytes = await readFile(files, binding.sessionId, binding.path)
-          await request({ type: 'open', bytes, extension: binding.extension }, bytes === undefined ? [] : [bytes])
-          if (!destroyed) setState('ready')
+          await openInEditor(await loaded)
+          if (destroyed) return
+          detachSource = sync.setSource(async () => new Uint8Array(await withTimeout(
+            request({ type: 'save', extension: binding.extension }) as Promise<ArrayBuffer>,
+            EXPORT_TIMEOUT_MS,
+            'LibreOffice did not export the document in time',
+          )))
+          setState('ready')
         } catch (error) {
-          fail(t('error.open', { reason: error instanceof Error ? error.message : String(error) }))
+          fail(t('error.open', { reason: reason(error) }))
         }
+      }
+
+      /** Save now, keys typed just before (e.g. right before closing) included. */
+      const saveNow = async (): Promise<void> => {
+        await markIfModified()
+        await sync.flush()
       }
 
       const onMessage = (event: MessageEvent): void => {
         if (event.source !== frame.contentWindow || !isEnvelope(event.data)) return
         const message = event.data as unknown as FromEditor
-        if (message.type === 'ready') void open()
-        else if (message.type === 'failed') fail(t('error.start', { reason: message.message }))
-        else if (message.type === 'reply') {
-          const waiting = pending.get(message.id)
-          pending.delete(message.id)
-          if (message.ok) waiting?.resolve(message.value)
-          else waiting?.reject(new Error(message.error))
+        switch (message.type) {
+          case 'ready': void open(); break
+          case 'failed': fail(t('error.start', { reason: message.message })); break
+          case 'modified': if (root.dataset.state === 'ready') sync.touch(); break
+          // Leaving the editor (e.g. to message the AI) and Ctrl+S save now.
+          case 'blur':
+          case 'saveRequested': void saveNow(); break
+          case 'reply': {
+            const waiting = pending.get(message.id)
+            pending.delete(message.id)
+            if (message.ok) waiting?.resolve(message.value)
+            else waiting?.reject(new Error(message.error))
+          }
         }
       }
       window.addEventListener('message', onMessage)
 
+      const cleanup = (): void => {
+        destroyed = true
+        clearTimeout(timer)
+        watcher.abort()
+        detachSource?.()
+        unsubscribe()
+        sync.dispose()
+        window.removeEventListener('message', onMessage)
+        for (const waiting of pending.values()) waiting.reject(new Error('the editor closed'))
+        pending.clear()
+        root.remove()
+      }
+
       return {
-        // Saving comes in M2.
-        flush: async () => {},
+        flush: saveNow,
         focus() { frame.focus() },
-        destroy() {
-          destroyed = true
-          clearTimeout(timer)
-          window.removeEventListener('message', onMessage)
-          for (const waiting of pending.values()) waiting.reject(new Error('the editor closed'))
-          pending.clear()
-          root.remove()
-        },
+        // Save what is pending first: only the live LibreOffice can export it. The core keeps
+        // this view in the page, hidden, until it settles.
+        destroy: () => saveNow().finally(cleanup),
       }
     },
   }

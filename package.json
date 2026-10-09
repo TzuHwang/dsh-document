@@ -28,6 +28,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "dev:patch": "node scripts/dev-patch.mjs",
     "smoke": "node smoke/run.mjs",
     "install-command": "node scripts/install-command.mjs"
@@ -43,6 +44,7 @@
     "esbuild": "^0.28.2",
     "playwright-core": "^1.56.0",
     "react": "^19.2.8",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^4.0.0"
   }
 }

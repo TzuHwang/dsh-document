@@ -7,7 +7,8 @@
  * only mounts the engine in the center beside the AI chat.
  */
 import type { CordisContext, EditorService, Translate } from '@dsh-editor/core'
-import { createDocumentEngine, type WorkspaceFiles } from './engine.ts'
+import { createDocumentEngine } from './engine.ts'
+import type { WorkspaceFiles } from './file-io.ts'
 import { en, zh } from './locales.ts'
 
 export const name = 'dsh-document'

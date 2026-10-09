@@ -5,8 +5,8 @@ A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) plug
 of DSH, with the AI chat beside it. Built on
 [dsh-editor-template](https://github.com/TzuHwang/dsh-editor-template).
 
-**Status: early development.** Documents open in LibreOffice in the center; saving (next) and the
-AI tools are not done yet, so edits are not written back.
+**Status: early development.** Documents open in LibreOffice in the center and save back to their
+files; the AI tools are not done yet.
 
 ## How it works
 
@@ -19,8 +19,13 @@ AI tools are not done yet, so edits are not written back.
   LibreOffice gets the `SharedArrayBuffer` its threads need while DSH's page stays as it is.
 - The LibreOffice runtime and a CJK font (about 60 MB together) are downloaded from their CDNs the first
   time a document opens, then cached by the browser. Installing the plugin downloads nothing extra.
-- The AI edits documents through tools that drive the open LibreOffice instance (UNO), so changes
-  show live and can be undone.
+- Saving: after a pause in editing, when focus leaves the editor (e.g. for the chat), on Ctrl+S
+  or LibreOffice's Save, and when the tab closes, LibreOffice exports the document in the file's
+  own format (`.doc` stays Word 97) and the plugin's host route writes it, guarded by the version
+  last read. A change on disk reloads a clean document and is a conflict prompt while edits are
+  pending, so an AI write is never overwritten silently.
+- Planned: the AI edits documents through tools that drive the open LibreOffice instance (UNO), so
+  changes show live and can be undone.
 
 Requirements: the DSH web app in a Chromium browser (Chrome or Edge; `Document-Isolation-Policy`
 is Chromium-only), and network access to the CDNs on first use.

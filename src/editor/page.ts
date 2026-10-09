@@ -8,6 +8,7 @@
  */
 import {
   CHANNEL,
+  EXPORT_FILTERS,
   isEnvelope,
   type EditorConfig,
   type Envelope,
@@ -30,6 +31,8 @@ type ZetaHelperMainClass = new (threadJs: string, options: { threadJsType: 'clas
 interface EmscriptenFs {
   mkdirTree(path: string): void
   writeFile(path: string, data: Uint8Array): void
+  readFile(path: string): Uint8Array
+  unlink(path: string): void
 }
 const fs = (): EmscriptenFs => (globalThis as unknown as { FS: EmscriptenFs }).FS
 
@@ -37,10 +40,13 @@ const FONT_DIR = '/instdir/share/fonts/truetype'
 
 const config = (window as unknown as { __DSH_DOCUMENT__: EditorConfig }).__DSH_DOCUMENT__
 
-function send(message: FromEditor): void {
+function send(message: FromEditor, transfer: Transferable[] = []): void {
   const envelope: Envelope<FromEditor> = { ...message, channel: CHANNEL }
-  window.parent.postMessage(envelope, location.origin)
+  window.parent.postMessage(envelope, location.origin, transfer)
 }
+
+/** A file extension safe to use in an in-memory path. */
+const safeExtension = (extension: string): string => /^[a-z0-9]{1,8}$/.test(extension) ? extension : 'bin'
 
 /** Requests waiting for the office thread, by thread id. */
 const pending = new Map<number, (message: ThreadMessage) => void>()
@@ -74,8 +80,7 @@ async function handle(request: Request): Promise<unknown> {
     let url: string | undefined
     if (request.bytes !== undefined) {
       // LibreOffice detects the format by content; the extension keeps its filter choice unsurprising.
-      const extension = /^[a-z0-9]{1,8}$/.test(request.extension) ? request.extension : 'bin'
-      const path = `/tmp/document.${extension}`
+      const path = `/tmp/document.${safeExtension(request.extension)}`
       fs().writeFile(path, new Uint8Array(request.bytes))
       url = `file://${path}`
     }
@@ -84,6 +89,17 @@ async function handle(request: Request): Promise<unknown> {
     window.dispatchEvent(new Event('resize'))
     return undefined
   }
+  if (request.type === 'save') {
+    const filter = EXPORT_FILTERS[request.extension]
+    if (filter === undefined) throw new Error(`cannot save .${request.extension} files`)
+    const path = `/tmp/export.${safeExtension(request.extension)}`
+    await toThread({ cmd: 'export', url: `file://${path}`, filter })
+    const bytes = fs().readFile(path)
+    fs().unlink(path)
+    // A copy into a plain ArrayBuffer: the file system's memory may be shared.
+    return bytes.slice().buffer
+  }
+  if (request.type === 'isModified') return toThread({ cmd: 'isModified' })
   return toThread({ cmd: 'getText' })
 }
 
@@ -95,7 +111,7 @@ window.addEventListener('message', (event) => {
     return
   }
   handle(request).then(
-    value => send({ type: 'reply', id: request.id, ok: true, value }),
+    value => send({ type: 'reply', id: request.id, ok: true, value }, value instanceof ArrayBuffer ? [value] : []),
     (error: unknown) => send({ type: 'reply', id: request.id, ok: false, error: error instanceof Error ? error.message : String(error) }),
   )
 })
@@ -132,6 +148,9 @@ async function start(): Promise<void> {
     thread.onmessage = onThread
   })
 }
+
+// Focus leaving this page (for the chat composer, another tab) is when the engine saves.
+window.addEventListener('blur', () => send({ type: 'blur' }))
 
 start().catch((error: unknown) => {
   send({ type: 'failed', message: error instanceof Error ? error.message : String(error) })

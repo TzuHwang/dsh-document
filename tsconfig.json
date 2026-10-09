@@ -12,5 +12,5 @@
     "verbatimModuleSyntax": true,
     "types": ["node"]
   },
-  "include": ["src", "scripts", "smoke"]
+  "include": ["src", "tests", "scripts", "smoke"]
 }
