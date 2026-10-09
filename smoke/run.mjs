@@ -10,7 +10,7 @@
 // The DSH runtime is the one pinned by package.json#dshVersion: this checkout's
 // .dev/, else the template checkout's (its smoke installs it), else installed here.
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -77,8 +77,8 @@ const documents = join(temp, 'documents')
 const workspace = join(documents, 'deepseek-harness', 'default-workspace')
 mkdirSync(workspace, { recursive: true })
 writeFileSync(join(workspace, 'notes.md'), '# Notes\n\nfirst line\n')
-// The placeholder engine does not read the file; any bytes do.
-writeFileSync(join(workspace, 'report.docx'), new Uint8Array([0x50, 0x4b, 0x03, 0x04]))
+// Saved by LibreOffice; each holds the same text, Chinese included.
+for (const extension of ['docx', 'doc', 'odt']) copyFileSync(join(root, 'smoke', 'fixtures', `sample.${extension}`), join(workspace, `sample.${extension}`))
 const overlay = join(temp, 'smoke.patch.yml')
 writeFileSync(overlay, [
   '- id: workspace-controller',
@@ -157,11 +157,36 @@ try {
   const center = page.getByTestId('dsh-editor-center')
   check('the editor shows in the center for a new session', await eventually(async () => (await center.count()) > 0))
 
-  await openFromFiles('report.docx')
-  const placeholder = center.getByTestId('dsh-document-placeholder')
-  check('a .docx opens in the center, in dsh-document\'s engine', await eventually(async () =>
-    (await placeholder.count()) > 0 && (await placeholder.innerText()).includes('report.docx')))
+  const engine = center.getByTestId('dsh-document')
+  const state = async () => (await engine.count()) > 0 ? engine.getAttribute('data-state') : undefined
+  /** The open document's text, asked of the editor page over the engine's own protocol. */
+  const documentText = () => page.evaluate(() => new Promise((resolve, reject) => {
+    const frame = document.querySelector('[data-testid=dsh-document] iframe')
+    const id = 1e9 + Math.floor(Math.random() * 1e6)
+    const onMessage = (event) => {
+      const data = event.data
+      if (event.source !== frame.contentWindow || data?.channel !== 'dsh-document' || data.type !== 'reply' || data.id !== id) return
+      removeEventListener('message', onMessage)
+      if (data.ok) resolve(data.value)
+      else reject(new Error(data.error))
+    }
+    addEventListener('message', onMessage)
+    frame.contentWindow.postMessage({ channel: 'dsh-document', type: 'getText', id }, location.origin)
+  }))
+  const opensWithText = async (name) => {
+    await openFromFiles(name)
+    // The first open downloads LibreOffice (about 60 MB) unless the browser cached it.
+    const ready = await eventually(async () => (await state()) === 'ready' || (await state()) === 'failed', 240_000)
+    const text = (await state()) === 'ready' ? String(await documentText()) : await engine.innerText()
+    check(`${name}: LibreOffice opens it in the center, Chinese included`, ready && /Hello from dsh_document\. 中文測試。/.test(text), text)
+  }
+
+  await opensWithText('sample.docx')
   check('the core leaves it alone (no status line)', (await center.getByTestId('dsh-editor-status').count()) === 0)
+  check('the editor page is isolated (SharedArrayBuffer available)', await page.frame({ url: /dsh-document\/editor/ })?.evaluate(() => self.crossOriginIsolated) === true)
+  await page.screenshot({ path: join(temp, 'docx.png') })
+  await opensWithText('sample.doc')
+  await opensWithText('sample.odt')
 
   await openFromFiles('notes.md')
   check('a text file still opens in the template\'s text editor', await eventually(async () => (await center.locator('.cm-line').count()) > 2))

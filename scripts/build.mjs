@@ -53,4 +53,20 @@ if (clientEntry) {
   ].join('\n'))
 }
 
-console.log(`built ${pkg.name}${hostEntry ? ' host' : ''}${clientEntry ? ' client' : ''}`)
+// The editor page's scripts, served by the host next to lib/host.js:
+//   src/editor/page.ts   -> lib/editor/page.js    ES module of the isolated iframe
+//   src/editor/thread.ts -> lib/editor/thread.js  classic script LibreOffice's worker imports
+const editorScripts = [['page', 'esm'], ['thread', 'iife']]
+for (const [name, format] of editorScripts) {
+  await build({
+    entryPoints: [resolve(cwd, `src/editor/${name}.ts`)],
+    outfile: resolve(cwd, `lib/editor/${name}.js`),
+    bundle: true,
+    format,
+    platform: 'browser',
+    target: 'es2022',
+    minify: process.env.NODE_ENV === 'production',
+  })
+}
+
+console.log(`built ${pkg.name}${hostEntry ? ' host' : ''}${clientEntry ? ' client' : ''} editor`)

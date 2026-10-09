@@ -5,8 +5,8 @@ A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) plug
 of DSH, with the AI chat beside it. Built on
 [dsh-editor-template](https://github.com/TzuHwang/dsh-editor-template).
 
-**Status: skeleton.** The plugin registers its document engine and DSH opens those files in it;
-the engine is a placeholder until LibreOffice is wired in.
+**Status: early development.** Documents open in LibreOffice in the center; saving (next) and the
+AI tools are not done yet, so edits are not written back.
 
 ## How it works
 
@@ -17,13 +17,28 @@ the engine is a placeholder until LibreOffice is wired in.
   [zetajs](https://github.com/allotropia/zetajs)) in an iframe the plugin serves with
   `Document-Isolation-Policy: isolate-and-credentialless`. That isolates the iframe alone, so
   LibreOffice gets the `SharedArrayBuffer` its threads need while DSH's page stays as it is.
-- The LibreOffice runtime (about 50 MB) and a CJK font are downloaded from their CDNs the first
+- The LibreOffice runtime and a CJK font (about 60 MB together) are downloaded from their CDNs the first
   time a document opens, then cached by the browser. Installing the plugin downloads nothing extra.
 - The AI edits documents through tools that drive the open LibreOffice instance (UNO), so changes
   show live and can be undone.
 
 Requirements: the DSH web app in a Chromium browser (Chrome or Edge; `Document-Isolation-Policy`
 is Chromium-only), and network access to the CDNs on first use.
+
+## Configuration
+
+The plugin's settings (its `dsh-document` row in the profile patch) say where the editor page loads
+LibreOffice from. Point them at your own copies to pin versions or work offline:
+
+```yaml
+- id: dsh-document
+  config:
+    zetaofficeUrl: https://cdn.zetaoffice.net/zetaoffice_latest/   # soffice.js / .wasm / .data
+    zetajsUrl: https://cdn.jsdelivr.net/npm/zetajs@1.2.0/source/
+    cjkFontUrl: https://cdn.jsdelivr.net/gh/notofonts/noto-cjk@Sans2.004/Sans/SubsetOTF/TC/NotoSansTC-Regular.otf   # '' for none
+```
+
+The ZetaOffice CDN publishes only `zetaoffice_latest`, so by default LibreOffice updates with it.
 
 ## Develop
 
