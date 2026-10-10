@@ -40,6 +40,8 @@ const AUTOSAVE_MS = 2_000
 const EXPORT_TIMEOUT_MS = 30_000
 /** How long a quick question to LibreOffice may take; closing must not hang on it. */
 const ASK_TIMEOUT_MS = 10_000
+/** A start from the browser's cache takes a few seconds; one still going after this is likely downloading. */
+const SLOW_START_MS = 8_000
 
 /** The engine's state, on its root element as `data-state`; the sync status is `data-sync`. */
 type State = 'starting' | 'opening' | 'ready' | 'failed'
@@ -227,14 +229,17 @@ export function createDocumentEngine(files: WorkspaceFiles, t: Translate, regist
       const fail = (message: string): void => {
         if (destroyed || root.dataset.state === 'failed') return
         clearTimeout(timer)
+        clearTimeout(slowTimer)
         setState('failed', message)
         settleReady(false, message)
       }
       const timer = setTimeout(() => fail(t('error.timeout')), START_TIMEOUT_MS)
+      const slowTimer = setTimeout(() => { if (root.dataset.state === 'starting') setState('starting', t('loading.slow')) }, SLOW_START_MS)
 
       let detachSource: (() => void) | undefined
       const open = async (): Promise<void> => {
         clearTimeout(timer)
+        clearTimeout(slowTimer)
         setState('opening', t('opening'))
         try {
           await openInEditor(await loaded)
@@ -301,6 +306,7 @@ export function createDocumentEngine(files: WorkspaceFiles, t: Translate, regist
         withdraw()
         destroyed = true
         clearTimeout(timer)
+        clearTimeout(slowTimer)
         watcher.abort()
         detachSource?.()
         unsubscribe()

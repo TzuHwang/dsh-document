@@ -1,6 +1,7 @@
 /** `dshDocument` namespace. Simplified Chinese follows DSH's own `zh`. */
 export const zh = {
-  loading: '正在启动 LibreOffice…（首次使用需下载约 60 MB）',
+  loading: '正在启动 LibreOffice…',
+  'loading.slow': '正在启动 LibreOffice…（首次使用需下载约 60 MB，之后会使用浏览器缓存）',
   opening: '正在打开文件…',
   'error.start': '无法启动 LibreOffice：{reason}',
   'error.open': '无法打开此文件：{reason}',
@@ -22,7 +23,8 @@ export const zh = {
 }
 
 export const en: typeof zh = {
-  loading: 'Starting LibreOffice… (about 60 MB to download the first time)',
+  loading: 'Starting LibreOffice…',
+  'loading.slow': 'Starting LibreOffice… (about 60 MB to download the first time; the browser keeps it after that)',
   opening: 'Opening the file…',
   'error.start': 'Could not start LibreOffice: {reason}',
   'error.open': 'Could not open this file: {reason}',
