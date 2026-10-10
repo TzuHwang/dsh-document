@@ -61,9 +61,11 @@ The ZetaOffice CDN publishes only `zetaoffice_latest`, so by default LibreOffice
 
 ## Develop
 
-Clone [dsh-editor-template](https://github.com/TzuHwang/dsh-editor-template) next to this
-repository (`../dsh-editor-template`, or set `DSH_EDITOR_TEMPLATE`): until the template releases
-the self-managed engine API, `@dsh-editor/core` links to that checkout.
+`@dsh-editor/core` (types only) comes from the template's release, `v0.1.0-dist`
+(`package.json#dshEditor.release`). The smoke test, the test site and `dev:patch` install the
+template's packages from a checkout of
+[dsh-editor-template](https://github.com/TzuHwang/dsh-editor-template) next to this repository
+(`../dsh-editor-template`, or set `DSH_EDITOR_TEMPLATE`), so both can be developed together.
 
 ```sh
 pnpm install

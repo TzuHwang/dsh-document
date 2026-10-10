@@ -15,8 +15,8 @@ importers:
         specifier: ~3.18.4
         version: 3.18.4
       '@dsh-editor/core':
-        specifier: link:../dsh-editor-template/packages/core
-        version: link:../dsh-editor-template/packages/core
+        specifier: github:TzuHwang/dsh-editor-template#v0.1.0-dist&path:/packages/core
+        version: git+https://github.com/TzuHwang/dsh-editor-template.git#135edc72f674917892e335cfef430e0dec268c56&path:/packages/core(@deepseek-ai/schemastery@3.18.4)
       '@types/node':
         specifier: ^22.20.1
         version: 22.20.5
@@ -187,6 +187,12 @@ packages:
 
   '@deepseek-ai/schemastery@3.18.4':
     resolution: {integrity: sha512-SSXO6tYuyrIqKVbmOnIq0s+riUywYzouFMcnBluHF9n4KMo2G8HvEzhCYj6pj2617/glOjbJuVInJ9hfONsjkg==}
+
+  '@dsh-editor/core@git+https://github.com/TzuHwang/dsh-editor-template.git#135edc72f674917892e335cfef430e0dec268c56&path:/packages/core':
+    resolution: {commit: 135edc72f674917892e335cfef430e0dec268c56, path: /packages/core, repo: https://github.com/TzuHwang/dsh-editor-template.git, type: git}
+    version: 0.1.0
+    peerDependencies:
+      '@deepseek-ai/schemastery': ~3.18.4
 
   '@esbuild/aix-ppc64@0.28.2':
     resolution: {integrity: sha512-XExcO+dvLKvVtNTibSTBej1NCAbaGhWn9Ww1ZPx80qsahhPFe/8jgWP0IchNe0F3HwkU7n8ejhH8bjonqht8mQ==}
@@ -927,6 +933,10 @@ snapshots:
     dependencies:
       '@deepseek-ai/cosmokit': 1.8.5
       '@standard-schema/spec': 1.1.0
+
+  '@dsh-editor/core@git+https://github.com/TzuHwang/dsh-editor-template.git#135edc72f674917892e335cfef430e0dec268c56&path:/packages/core(@deepseek-ai/schemastery@3.18.4)':
+    dependencies:
+      '@deepseek-ai/schemastery': 3.18.4
 
   '@esbuild/aix-ppc64@0.28.2':
     optional: true

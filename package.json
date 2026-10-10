@@ -48,7 +48,7 @@
   "devDependencies": {
     "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
     "@deepseek-ai/schemastery": "~3.18.4",
-    "@dsh-editor/core": "link:../dsh-editor-template/packages/core",
+    "@dsh-editor/core": "github:TzuHwang/dsh-editor-template#v0.1.0-dist&path:/packages/core",
     "@types/node": "^22.20.1",
     "@types/react": "^19.2.18",
     "esbuild": "^0.28.2",
