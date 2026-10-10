@@ -2,6 +2,7 @@
   "name": "dsh-document",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@12.3.4",
   "description": "Edit .doc, .docx and .odt in DeepSeek Harness with LibreOffice's own editor, beside the AI chat.",
   "license": "MIT",
   "type": "module",

@@ -1,0 +1,36 @@
+# Release: on a version tag, verify (typecheck, unit tests) and build, then
+# publish the built plugin as tag <tag>-dist, which DSH installs from.
+# The smoke test needs a built template checkout beside this one, so it is run
+# locally before tagging (`pnpm smoke`), not here.
+name: release
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+        env:
+          NODE_ENV: production
+      - name: Publish ${{ github.ref_name }}-dist
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          node scripts/release.mjs "${GITHUB_REF_NAME}"
